@@ -61,25 +61,30 @@
 
     opts))
 
+(defn normalize-zero
+  "Преобразует -0.0 в 0.0 для корректного вывода."
+  [x]
+  (let [d (double x)]
+    (if (= d -0.0) 0.0 d)))
+
 ; ---- алгоритмы интерполяции ----
 
 (defn grid-points
-  "Генерирует точки сетки, кратные шагу step, на отрезке [l, r]."
+  "Генерирует точки с шагом step, начиная с l, не выходя за r."
   [l r step]
-  (let [tolerance (* 1e-9 step)                ; маленький допуск
-        start-k (long (Math/ceil  (/ (- l tolerance) step)))
-        end-k (long (Math/floor (/ (+ r tolerance) step)))]
-    (map #(* step %) (range start-k (inc end-k)))))
+  (take-while #(<= % r) (iterate #(+ % step) l)))
 
 (defn linear-interpolation [points step l r]
   (let [[p1 p2] points
         x1 (:x p1) y1 (:y p1)
-        x2 (:x p2) y2 (:y p2)
-        x-values (grid-points l r step)]
+        x2 (:x p2) y2 (:y p2) 
+        l-clamped (max l x1)
+        r-clamped (min r x2)
+        x-values (grid-points l-clamped r-clamped step)]
     (map (fn [x]
-           (let [t (/ (- x x1) (- x2 x1))]
-             {:x (double x)
-              :y (+ y1 (* t (- y2 y1)))}))
+           (let [t (if (= x1 x2) 0.0 (/ (- x x1) (- x2 x1)))]
+             {:x (normalize-zero (double x))
+              :y (normalize-zero (+ y1 (* t (- y2 y1))))}))
          x-values)))
 
 (defn lagrange-polynomial [points x]
@@ -103,9 +108,14 @@
      (range n))))
 
 (defn lagrange-interpolation [points step l r]
-  (let [x-values (grid-points l r step)]
-    (map (fn [x] {:x (double x)
-                  :y (lagrange-polynomial points x)})
+  (let [
+        x-min (:x (first points))
+        x-max (:x (peek points))
+        l-clamped (max l x-min)
+        r-clamped (min r x-max)
+        x-values (grid-points l-clamped r-clamped step)]
+    (map (fn [x] {:x (normalize-zero (double x))
+                  :y (normalize-zero (lagrange-polynomial points x))})
          x-values)))
 
 ; ----- утилиты окна -----
@@ -114,37 +124,27 @@
   "Сдвигает окно добавлением новой точки p. При превышении размера удаляет старейшую."
   [window max-size p]
   (let [current-size (count window)]
-    (if (< current-size max-size)
-      ; окно ещё не заполнено - просто добавляем
-      (conj window p)
-      ; окно заполнено - сдвигаем и добавляем в конец
+    (if (< current-size max-size) 
+      (conj window p) 
       (conj (subvec window 1) p))))
-
-(defn middle-point
-  "Находит ближайшую к центру интервала точку, кратную шагу."
-  [points step]
-  (let [x-start (:x (first points))
-        x-end (:x (peek points))
-        center (/ (+ x-start x-end) 2.0)        ; центр отрезка
-        k (Math/floor (/ center step))          ; нижний индекс кратной точки
-        lower (* k step)                        ; кратная точка снизу
-        upper (+ lower step)                    ; кратная точка сверху
-        dist-lower (Math/abs (- center lower))
-        dist-upper (Math/abs (- center upper))]
-    (if (<= dist-lower dist-upper)
-      (double lower)
-      (double upper))))
 
 ; ---- валидация -----
 
 (defn check-order
-  "Если x новой точки меньше предыдущего x, выбрасывает исключение."
+  "Если x новой точки меньше или равен предыдущему x, выбрасывает исключение."
   [prev-x {:keys [x] :as p}]
-  (when (and (some? prev-x) (< x prev-x))
-    (throw (ex-info "Input x is not nondecreasing"
-                    {:prev-x prev-x
-                     :x      x
-                     :point  p}))))
+  (when (some? prev-x)
+    (cond
+      (< x prev-x)
+      (throw (ex-info "Input x is not nondecreasing"
+                      {:prev-x prev-x
+                       :x      x
+                       :point  p}))
+      
+      (= x prev-x)
+      (throw (ex-info "Duplicate x value in input"
+                      {:x      x
+                       :point  p})))))
 
 (defn validate-input-order!
   "Проверяет монотонность x-координат входных точек."
@@ -157,31 +157,6 @@
           (>! output-chan point)
           (recur (:x point)))
         (close! output-chan)))))
-
-; ---- обработка сегментов интерполяции -----
-
-(defn process-initial-segment
-  [points interpolate-fn step]
-  (let [x-start (:x (first points))
-        x-middle (middle-point points step)]
-    (interpolate-fn points x-start x-middle)))
-
-(defn process-next-segment
-  [prev-points curr-points interpolate-fn step]
-  (let [prev-middle (middle-point prev-points step)
-        curr-middle (middle-point curr-points step)
-        segment-start (+ prev-middle step)]
-    (when (<= segment-start curr-middle)
-      (interpolate-fn curr-points segment-start curr-middle))))
-
-(defn process-final-segment
-  [points interpolate-fn step]
-  (let [middle (middle-point points step)
-        x-final (:x (peek points))
-        segment-start (+ middle step)]
-    ; Всегда обрабатываем финальную часть если есть точки после середины
-    (when (<= segment-start x-final)
-      (interpolate-fn points segment-start x-final))))
 
 ; ---- обработка ввода -----
 
@@ -208,11 +183,14 @@
   [output-chan]
   (go
     (loop []
-      (when-let [[algorithm x-val y-val] (<! output-chan)]
-        (println (format "> %s: %.2f %.2f" algorithm x-val y-val))
+      (when-let [[algorithm x-val y-val] (<! output-chan)] 
+        (println (format "%s: %.2f %.2f" 
+                         algorithm 
+                         (normalize-zero x-val) 
+                         (normalize-zero y-val)))
         (recur)))))
 
-; ---- процессор интерполяции (полиморфная реализация) ----
+; ---- процессор интерполяции ----
 
 ; Мультиметоды для полиморфизма алгоритмов
 (defmulti window-size
@@ -237,63 +215,36 @@
 (defmethod create-interpolator :default [algo _]
   (throw (ex-info "Неизвестный алгоритм" {:algo algo})))
 
-(defn handle-filling
-  "Обработка первого заполнения окна."
-  [updated-data interpolator step]
-  (let [results (process-initial-segment updated-data interpolator step)]
-    {:data updated-data :ready? true :results results}))
-
-(defn handle-sliding
-  "Обработка сдвига окна."
-  [data updated-data interpolator step]
-  (let [results (process-next-segment data updated-data interpolator step)]
-    {:data updated-data :ready? true :results results}))
-
-(defn handle-finalization
-  "Финальная обработка данных."
-  [state interpolator step]
-  (when (:ready? state)
-    (process-final-segment (:data state) interpolator step)))
-
 (defn interpolation-processor!
   "Обрабатывает поток точек выбранным алгоритмом интерполяции."
   [algorithm processor-chan step window-param output-chan]
   (let [max-size (window-size algorithm window-param)
         interpolator (create-interpolator algorithm step)]
     (go
-      (loop [state {:data [] :ready? false}]
+      (loop [window []
+             next-x nil]
         (if-let [point (<! processor-chan)]
-          ; пришла новая точка
-          (let [{:keys [data ready?]} state
-                updated-data (slide-window data max-size point)
-                is-full? (= (count updated-data) max-size)]
-            (cond
-              ; 1) окно ещё не заполнено
-              (not is-full?)
-              (recur (assoc state :data updated-data))
-
-              ; 2) первое заполнение окна -> init
-              (not ready?)
-              (let [new-state (handle-filling updated-data interpolator step)]
-                (when-let [results (:results new-state)]
-                  (doseq [{:keys [x y]} results]
-                    (>! output-chan [algorithm x y])))
-                (recur (dissoc new-state :results)))
-
-              ; 3) steady-state -> step
-              :else
-              (let [new-state (handle-sliding data updated-data interpolator step)]
-                (when-let [results (:results new-state)]
-                  (doseq [{:keys [x y]} results]
-                    (>! output-chan [algorithm x y])))
-                (recur (dissoc new-state :results)))))
-          ; processor-chan закрыт -> финализируем
-          (do
-            (when-let [results (handle-finalization state interpolator step)]
-              (doseq [{:keys [x y]} results]
-                (>! output-chan [algorithm x y])))
-            ; завершение go-блока
-            nil))))))
+          (let [updated-window (slide-window window max-size point)
+                x (:x point)
+                is-full? (= (count updated-window) max-size)
+                start-x (or next-x (when is-full? (:x (first updated-window))))]
+            
+            (if (and is-full? start-x)
+              (let [max-x x
+                    new-next-x
+                    (loop [curr-x start-x]
+                      (if (<= curr-x max-x)
+                        (do
+                          (let [results (interpolator updated-window curr-x curr-x)]
+                            (doseq [{:keys [x y]} results]
+                              (>! output-chan [algorithm x y])))
+                          (recur (+ curr-x step)))
+                        curr-x))]
+                (recur updated-window new-next-x))
+              
+              (recur updated-window start-x)))
+          
+          nil)))))
 
 ; ---- основная функция ----
 
