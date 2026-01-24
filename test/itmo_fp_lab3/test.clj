@@ -21,7 +21,7 @@
            (vec (core/grid-points -5.0 10.0 5.0)))))
   (testing "grid-points начинается с l, не с кратной точки"
     (is (= [1.111 2.111 3.111]
-           (map #(/ (Math/round (* % 1000)) 1000.0)
+           (map #(/ (Math/round (* (double %) 1000)) 1000.0)
                 (vec (core/grid-points 1.111 3.5 1.0)))))))
 
 (deftest linear-method-test
