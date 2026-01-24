@@ -15,7 +15,7 @@
     :parse-fn #(Double/parseDouble %)
     :validate [pos? "Шаг должен быть положительным числом"]]
 
-   ["-w" "--window N" "Размер окна для полиномиальной интерполяции (>=2)"
+   ["-w" "--window N" "Размер окна для полиномиальной интерполяции"
     :default nil
     :parse-fn #(Long/parseLong %)
     :validate [#(or (nil? %) (>= % 2)) "Размер окна должен быть не менее 2"]]
@@ -77,7 +77,7 @@
 (defn linear-interpolation [points step l r]
   (let [[p1 p2] points
         x1 (:x p1) y1 (:y p1)
-        x2 (:x p2) y2 (:y p2) 
+        x2 (:x p2) y2 (:y p2)
         l-clamped (max l x1)
         r-clamped (min r x2)
         x-values (grid-points l-clamped r-clamped step)]
@@ -108,8 +108,7 @@
      (range n))))
 
 (defn lagrange-interpolation [points step l r]
-  (let [
-        x-min (:x (first points))
+  (let [x-min (:x (first points))
         x-max (:x (peek points))
         l-clamped (max l x-min)
         r-clamped (min r x-max)
@@ -124,8 +123,8 @@
   "Сдвигает окно добавлением новой точки p. При превышении размера удаляет старейшую."
   [window max-size p]
   (let [current-size (count window)]
-    (if (< current-size max-size) 
-      (conj window p) 
+    (if (< current-size max-size)
+      (conj window p)
       (conj (subvec window 1) p))))
 
 ; ---- валидация -----
@@ -140,7 +139,7 @@
                       {:prev-x prev-x
                        :x      x
                        :point  p}))
-      
+
       (= x prev-x)
       (throw (ex-info "Duplicate x value in input"
                       {:x      x
@@ -183,10 +182,10 @@
   [output-chan]
   (go
     (loop []
-      (when-let [[algorithm x-val y-val] (<! output-chan)] 
-        (println (format "%s: %.2f %.2f" 
-                         algorithm 
-                         (normalize-zero x-val) 
+      (when-let [[algorithm x-val y-val] (<! output-chan)]
+        (println (format "%s: %.2f %.2f"
+                         algorithm
+                         (normalize-zero x-val)
                          (normalize-zero y-val)))
         (recur)))))
 
@@ -228,7 +227,7 @@
                 x (:x point)
                 is-full? (= (count updated-window) max-size)
                 start-x (or next-x (when is-full? (:x (first updated-window))))]
-            
+
             (if (and is-full? start-x)
               (let [max-x x
                     new-next-x
@@ -241,9 +240,9 @@
                           (recur (+ curr-x step)))
                         curr-x))]
                 (recur updated-window new-next-x))
-              
+
               (recur updated-window start-x)))
-          
+
           nil)))))
 
 ; ---- основная функция ----
